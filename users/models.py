@@ -34,6 +34,7 @@ class CustomUser(AbstractUser):
         ADMIN = 'ADMIN', 'Адмін'
         COMPILER = 'COMPILER', 'Укладач'
         USER = 'USER', 'Користувач'
+        GUEST = 'GUEST', 'Гість'  # TODO: define Guest capabilities
         
     username = None 
     email = models.EmailField(unique=True)

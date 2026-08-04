@@ -1,9 +1,10 @@
 from django.contrib import admin
-from .models import Corpus, UserSubcorpus, FilteredSubcorpus, Text, TextMetadata, CorpusUserAccess
+from .models import Corpus, UserSubcorpus, FilteredSubcorpus, Text, TextMetadata, CorpusUserAccess, CorpusShare
 
 admin.site.register(UserSubcorpus)
 admin.site.register(FilteredSubcorpus)
 admin.site.register(CorpusUserAccess)
+admin.site.register(CorpusShare)
 
 
 class BaseContentAdmin(admin.ModelAdmin):

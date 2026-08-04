@@ -1,7 +1,7 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import get_object_or_404
@@ -15,8 +15,10 @@ from .serializers import (
     AdminUserCreateSerializer,
     AdminUserUpdateSerializer,
     AdminCorpusListSerializer,
+    AdminSubcorpusListSerializer,
+    UserUpdateSerializer,
 )
-from corpus.models import Corpus, Text
+from corpus.models import Corpus, Text, UserSubcorpus
 
 
 class LoginAPIView(TokenObtainPairView):
@@ -40,11 +42,43 @@ class RegisterUserAPI(APIView):
                 "message": "User was successfully created!",
                 "access": str(refresh.access_token),
                 "refresh": str(refresh),
+                "user_id": user.id,
                 "user_full_name": user.full_name,
+                "user_phone_number": user.phone_number,
                 "user_email": user.email,
                 "user_role": user.role,
             }, status=status.HTTP_201_CREATED)
             
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class UserProfileView(APIView):
+    serializer_class = UserUpdateSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_object(self):
+        return self.request.user
+
+    def get(self, request):
+        user = request.user
+        return Response({
+            'full_name': user.full_name,
+            'email': user.email,
+            'phone_number': user.phone_number,
+            'role': user.role,
+        }, status=status.HTTP_200_OK)
+
+    def patch(self, request):
+        serializer = UserUpdateSerializer(
+            instance=request.user, 
+            data=request.data, 
+            partial=True
+        )
+        
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -150,8 +184,19 @@ class AdminCorpusDeleteAPI(APIView):
 
     def delete(self, request, pk):
         corpus = get_object_or_404(Corpus, pk=pk)
-        corpus.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+
+        if request.user.role == CustomUser.Role.SUPER_ADMIN:
+            corpus.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        if corpus.creator == request.user or _can_manage_target(request.user, corpus.creator):
+            corpus.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        return Response(
+            {"error": "Ви не маєте права видаляти цей корпус."},
+            status=status.HTTP_403_FORBIDDEN
+        )
 
 
 class AdminTextDeleteAPI(APIView):
@@ -161,3 +206,33 @@ class AdminTextDeleteAPI(APIView):
         text = get_object_or_404(Text, pk=pk)
         text.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AdminSubcorpusListAPI(APIView):
+    permission_classes = [IsAdminOrHigher]
+
+    def get(self, request, corpus_id):
+        corpus = get_object_or_404(Corpus, pk=corpus_id)
+        subcorpora = UserSubcorpus.objects.filter(corpus=corpus).select_related('creator')
+        serializer = AdminSubcorpusListSerializer(subcorpora, many=True)
+        return Response(serializer.data)
+
+
+class AdminSubcorpusDeleteAPI(APIView):
+    permission_classes = [IsAdminOrHigher]
+
+    def delete(self, request, pk):
+        subcorpus = get_object_or_404(UserSubcorpus, pk=pk)
+
+        if request.user.role == CustomUser.Role.SUPER_ADMIN:
+            subcorpus.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        if subcorpus.creator == request.user or _can_manage_target(request.user, subcorpus.creator):
+            subcorpus.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        return Response(
+            {"error": "Ви не маєте права видаляти цей підкорпус."},
+            status=status.HTTP_403_FORBIDDEN
+        )

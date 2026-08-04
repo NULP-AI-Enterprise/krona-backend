@@ -140,10 +140,12 @@ class CorpusListSerializer(serializers.ModelSerializer):
     Dynamically includes subcorpora and timestamps based on context.
     """
     subcorpora = serializers.SerializerMethodField()
+    creator_id = serializers.IntegerField(source='creator.id', read_only=True)
+    creator_name = serializers.CharField(source='creator.full_name', read_only=True)
 
     class Meta:
         model = Corpus
-        fields = ['id', 'name', 'subcorpora']
+        fields = ['id', 'name', 'subcorpora', 'creator_id', 'creator_name']
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -168,9 +170,12 @@ class CorpusListSerializer(serializers.ModelSerializer):
             item = {
                 "id": uc.id,
                 "name": uc.name,
-                "type": "user"
+                "type": "user",
+                "creator_id": uc.creator_id,
+                "creator_name": getattr(uc.creator, 'full_name', None),
             }
             if include_timestamps:
+                # UserSubcorpus has no timestamp field on the model yet.
                 item["creation_time"] = None
             subcorpora_list.append(item)
 
@@ -178,10 +183,14 @@ class CorpusListSerializer(serializers.ModelSerializer):
             item = {
                 "id": fc.id,
                 "name": fc.name,
-                "type": "filtered"
+                "type": "filtered",
+                "creator_id": fc.creator_id,
+                "creator_name": getattr(fc.creator, 'full_name', None),
+                "filters": fc.filters,
             }
             if include_timestamps:
                 item["creation_time"] = fc.creation_time
+                item["update_time"] = fc.update_time
             subcorpora_list.append(item)
 
         return subcorpora_list

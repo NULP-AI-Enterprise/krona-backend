@@ -10,7 +10,7 @@ from elasticsearch_dsl import Search, Q, A
 from elasticsearch_dsl.query import Match, Nested
 
 from corpus.processors.text_processor import text_processor_instance as tp
-from ..models import Text, FilteredSubcorpus
+from ..models import Text, FilteredSubcorpus, UserSubcorpus
 from ..documents import SentenceDocument
 
 
@@ -30,6 +30,7 @@ class ConcordanceAPI(APIView):
 
         page = int(request.data.get('page', 1))
         page_size = int(request.data.get('page_size', 25))
+        export_all = request.data.get('export', False)
 
         # Text ids retrieval
         try:
@@ -43,9 +44,16 @@ class ConcordanceAPI(APIView):
                 text_ids = list(filtered_subcorpus.texts.values_list("id", flat=True))
 
             elif collection_type == "corpus":
-                text_ids = list(Text.objects
-                                .filter(corpus_id=collection_id)
-                                .values_list("id", flat=True))
+                corpus_text_ids = list(Text.objects
+                                       .filter(corpus_id=collection_id)
+                                       .values_list("id", flat=True))
+                subcorpus_ids = list(UserSubcorpus.objects
+                                     .filter(corpus_id=collection_id)
+                                     .values_list("id", flat=True))
+                subcorpus_text_ids = list(Text.objects
+                                          .filter(user_subcorpus_id__in=subcorpus_ids)
+                                          .values_list("id", flat=True)) if subcorpus_ids else []
+                text_ids = corpus_text_ids + subcorpus_text_ids
             else:
                 return Response({"error": "Невідомий тип колекції"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -116,7 +124,13 @@ class ConcordanceAPI(APIView):
             for rule in query_rules:
                 if 'distance' in rule:
                     continue
-                token_clauses = [Q("match", **{f"tokens.{k}": v}) for k, v in rule.items()]
+                token_clauses = []
+                for k, v in rule.items():
+                    field = f"tokens.{k}"
+                    if isinstance(v, list):
+                        token_clauses.append(Q("terms", **{field: v}))
+                    else:
+                        token_clauses.append(Q("term", **{field: v}))
                 must_queries.append(Q("nested", path="tokens", query=Q("bool", must=token_clauses)))
 
             elastic_query = elastic_query.query("bool", must=must_queries)
@@ -132,10 +146,13 @@ class ConcordanceAPI(APIView):
             print(f"Elasticsearch count error: {e}")
             total_hits = 0
 
-        # Fetch only the page window from ES
-        es_from = (page - 1) * page_size
-        es_size = page_size * 3  # overfetch slightly since one hit can produce multiple KWIC matches
-        elastic_query = elastic_query.extra(from_=es_from, size=es_size)
+        if export_all:
+            export_limit = 10000
+            elastic_query = elastic_query.extra(from_=0, size=min(total_hits, export_limit))
+        else:
+            es_from = (page - 1) * page_size
+            es_size = page_size * 3
+            elastic_query = elastic_query.extra(from_=es_from, size=es_size)
 
         try:
             response = elastic_query.execute()
@@ -169,6 +186,13 @@ class ConcordanceAPI(APIView):
                 })
 
         total_items = total_hits
+
+        if export_all:
+            return Response({
+                'results': results,
+                'total_items': total_items
+            }, status=status.HTTP_200_OK)
+
         paginated_results = results[:page_size]
 
         # Statistics calculation
@@ -250,9 +274,16 @@ class WordListAPI(APIView):
                 text_ids = list(filtered_subcorpus.texts.values_list("id", flat=True))
 
             elif collection_type == "corpus":
-                text_ids = list(Text.objects
-                                .filter(corpus_id=collection_id)
-                                .values_list("id", flat=True))
+                corpus_text_ids = list(Text.objects
+                                       .filter(corpus_id=collection_id)
+                                       .values_list("id", flat=True))
+                subcorpus_ids = list(UserSubcorpus.objects
+                                     .filter(corpus_id=collection_id)
+                                     .values_list("id", flat=True))
+                subcorpus_text_ids = list(Text.objects
+                                          .filter(user_subcorpus_id__in=subcorpus_ids)
+                                          .values_list("id", flat=True)) if subcorpus_ids else []
+                text_ids = corpus_text_ids + subcorpus_text_ids
             else:
                 return Response({"error": "Невідомий тип колекції"}, status=status.HTTP_400_BAD_REQUEST)
 

@@ -1,10 +1,12 @@
 import os
 import json
 import tempfile
+import re
 
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly
+from users.permissions import IsCompilerOrHigher
 from rest_framework.response import Response
 
 from django.shortcuts import get_object_or_404
@@ -17,7 +19,8 @@ from elasticsearch_dsl.connections import connections
 from corpus.processors.file_processor import parse_uploaded_file
 from corpus.processors.linguistic_processor import lingustic_processor_instance as lp
 from ..documents import SentenceDocument
-from ..models import Corpus, Text, Style, Genre, TextMetadata, FilteredSubcorpus, UserSubcorpus
+from django.db.models import Q
+from ..models import Corpus, Text, Style, Genre, TextMetadata, FilteredSubcorpus, UserSubcorpus, SubcorpusAccessGrant, CorpusUserAccess
 from ..serializers import (CorpusSerializer, CorpusListSerializer, TextSerializer, TextListSerializer,
                            FilteredSubcorpusSerializer, UserSubcorpusSerializer, StyleWithGenresSerializer)
 
@@ -44,7 +47,7 @@ class CorpusMetadataOptionsAPI(APIView):
 
 
 class CreateCorpusAPI(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsCompilerOrHigher]
 
     # Creates a new corpus with metadata
     def post(self, request):
@@ -83,7 +86,8 @@ class CorpusAPI(APIView):
     # Deletes corpus and all subcorpora/texts in it
     def delete(self, request, pk):
         corpus = get_object_or_404(Corpus, pk=pk)
-        if corpus.creator != request.user:
+        is_admin = request.user.role in ('SUPER_ADMIN', 'ADMIN')
+        if corpus.creator != request.user and not is_admin:
             return Response({"error": "You can only delete your own corpus"}, status=status.HTTP_403_FORBIDDEN)
         corpus.delete()
 
@@ -96,24 +100,43 @@ class CorpusListAPI(APIView):
         include_subcorpora = request.query_params.get('include_subcorpora', '').lower() == 'true'
         include_timestamps = request.query_params.get('include_timestamps', '').lower() == 'true'
 
-        corpora = Corpus.objects.all().order_by('id')
+        if request.user.is_authenticated:
+            is_privileged = request.user.role in ('SUPER_ADMIN', 'ADMIN')
 
-        if include_subcorpora:
-            # Uploads only user's subcorpora
-            if request.user.is_authenticated:
-                user_sub_prefetch = Prefetch(
-                    'usersubcorpus_set', 
-                    queryset=UserSubcorpus.objects.filter(creator=request.user)
-                )
-                filtered_sub_prefetch = Prefetch(
-                    'filteredsubcorpus_set', 
-                    queryset=FilteredSubcorpus.objects.filter(creator=request.user)
-                )
-                corpora = corpora.prefetch_related(user_sub_prefetch, filtered_sub_prefetch)
+            participated_corpus_ids = set(
+                CorpusUserAccess.objects.filter(user=request.user)
+                .values_list('corpus_id', flat=True)
+            )
+            created_corpus_ids = set(
+                Corpus.objects.filter(creator=request.user)
+                .values_list('id', flat=True)
+            )
+            full_access_corpus_ids = participated_corpus_ids | created_corpus_ids
+
+            if is_privileged:
+                corpora = Corpus.objects.all().order_by('id')
             else:
-                user_sub_prefetch = Prefetch('usersubcorpus_set', queryset=UserSubcorpus.objects.none())
-                filtered_sub_prefetch = Prefetch('filteredsubcorpus_set', queryset=FilteredSubcorpus.objects.none())
+                corpora = Corpus.objects.filter(
+                    Q(id__in=full_access_corpus_ids)
+                ).order_by('id')
+
+            if include_subcorpora:
+                if is_privileged:
+                    user_sub_qs = UserSubcorpus.objects.all()
+                    filtered_sub_qs = FilteredSubcorpus.objects.all()
+                else:
+                    user_sub_qs = UserSubcorpus.objects.filter(
+                        Q(corpus_id__in=full_access_corpus_ids) | Q(creator=request.user)
+                    ).distinct()
+                    filtered_sub_qs = FilteredSubcorpus.objects.filter(
+                        Q(corpus_id__in=full_access_corpus_ids) | Q(creator=request.user)
+                    ).distinct()
+
+                user_sub_prefetch = Prefetch('usersubcorpus_set', queryset=user_sub_qs)
+                filtered_sub_prefetch = Prefetch('filteredsubcorpus_set', queryset=filtered_sub_qs)
                 corpora = corpora.prefetch_related(user_sub_prefetch, filtered_sub_prefetch)
+        else:
+            corpora = Corpus.objects.none()
 
         serializer = CorpusListSerializer(
             corpora,
@@ -279,7 +302,18 @@ class TextListAPI(APIView):
             if not request.user.is_authenticated:
                 return Response({"error": "Need Authorization"}, status=status.HTTP_401_UNAUTHORIZED)
             subcorpus = get_object_or_404(UserSubcorpus, id=user_subcorpus_id)
-            if getattr(subcorpus, 'creator', getattr(subcorpus, 'user', None)) != request.user:
+
+            is_owner = subcorpus.creator == request.user
+            is_admin = request.user.role in ('SUPER_ADMIN', 'ADMIN')
+            has_grant = SubcorpusAccessGrant.objects.filter(
+                subcorpus=subcorpus, user=request.user
+            ).exists()
+            is_corpus_participant = CorpusUserAccess.objects.filter(
+                corpus=subcorpus.corpus, user=request.user
+            ).exists()
+            is_corpus_creator = subcorpus.corpus.creator == request.user
+
+            if not (is_owner or is_admin or has_grant or is_corpus_participant or is_corpus_creator):
                 return Response({"error": "You do not have a permission"}, status=status.HTTP_403_FORBIDDEN)
             texts = Text.objects.select_related('metadata').filter(user_subcorpus=subcorpus)
             collection_name = subcorpus.name
@@ -290,11 +324,25 @@ class TextListAPI(APIView):
             if not request.user.is_authenticated:
                 return Response({"error": "Need Authorization"}, status=status.HTTP_401_UNAUTHORIZED)
             subcorpus = get_object_or_404(FilteredSubcorpus, id=filtered_subcorpus_id)
-            if subcorpus.creator != request.user:
+
+            is_creator = subcorpus.creator == request.user
+            is_admin = request.user.role in ('SUPER_ADMIN', 'ADMIN')
+            is_corpus_participant = CorpusUserAccess.objects.filter(
+                corpus=subcorpus.corpus, user=request.user
+            ).exists()
+            is_corpus_creator = subcorpus.corpus.creator == request.user
+
+            if not (is_creator or is_admin or is_corpus_participant or is_corpus_creator):
                 return Response({"error": "You do not have a permission"}, status=status.HTTP_403_FORBIDDEN)
             texts = subcorpus.texts.select_related('metadata').all()
             collection_name = subcorpus.name
             collection_type = "filtered_subcorpus"
+            collection_filters = subcorpus.filters
+            collection_creator = {
+                "id": getattr(subcorpus.creator, 'id', None),
+                "username": getattr(subcorpus.creator, 'username', None)
+            }
+            collection_update_time = getattr(subcorpus, 'update_time', None) or getattr(subcorpus, 'creation_time', None)
 
         else:
             return Response(
@@ -304,12 +352,20 @@ class TextListAPI(APIView):
 
         serializer = TextListSerializer(texts, many=True)
 
+        collection_info = {
+            "type": collection_type,
+            "name": collection_name,
+            "total_texts": texts.count()
+        }
+
+        if collection_type == "filtered_subcorpus":
+            collection_info["creator"] = collection_creator
+            collection_info["update_time"] = collection_update_time
+            if 'collection_filters' in locals():
+                collection_info["filters"] = collection_filters
+
         return Response({
-            "collection_info": {
-                "type": collection_type,
-                "name": collection_name,
-                "total_texts": texts.count()
-            },
+            "collection_info": collection_info,
             "texts": serializer.data
         })
 
@@ -414,7 +470,19 @@ class CreateFilteredSubcorpusAPI(APIView):
 
         authors = filters.get('authors')
         if authors:
-            texts = texts.filter(metadata__author__in=authors)
+            author_q = Q()
+            for author_val in authors:
+                if not author_val:
+                    continue
+                tokens = [t.strip() for t in re.split(r"\s+", author_val) if t.strip()]
+                if not tokens:
+                    continue
+                token_q = Q()
+                for tok in tokens:
+                    token_q &= Q(metadata__author__icontains=tok)
+                author_q |= token_q
+            if author_q:
+                texts = texts.filter(author_q)
 
         sources = filters.get('sources')
         if sources:
@@ -429,7 +497,14 @@ class CreateFilteredSubcorpusAPI(APIView):
             texts = texts.filter(metadata__text_origin__in=text_origin)
 
         year_of_creation = filters.get('years_of_creation')
-        if year_of_creation and isinstance(year_of_creation, list):
+        if year_of_creation is not None:
+            if not isinstance(year_of_creation, list):
+                return Response({"error": "years_of_creation must be a list"}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                year_of_creation = [int(y) for y in year_of_creation]
+            except (ValueError, TypeError):
+                return Response({"error": "All values in years_of_creation must be valid integers"}, status=status.HTTP_400_BAD_REQUEST)
+
             if len(year_of_creation) == 1:
                 texts = texts.filter(metadata__year_of_creation=year_of_creation[0])
             elif len(year_of_creation) == 2:
@@ -437,7 +512,14 @@ class CreateFilteredSubcorpusAPI(APIView):
                 texts = texts.filter(metadata__year_of_creation__range=(start_year, end_year))
 
         years_of_publication = filters.get('years_of_publication')
-        if years_of_publication and isinstance(years_of_publication, list):
+        if years_of_publication is not None:
+            if not isinstance(years_of_publication, list):
+                return Response({"error": "years_of_publication must be a list"}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                years_of_publication = [int(y) for y in years_of_publication]
+            except (ValueError, TypeError):
+                return Response({"error": "All values in years_of_publication must be valid integers"}, status=status.HTTP_400_BAD_REQUEST)
+
             if len(years_of_publication) == 1:
                 texts = texts.filter(metadata__years_of_publication__contains=[years_of_publication[0]])
             elif len(years_of_publication) == 2:
@@ -453,7 +535,8 @@ class CreateFilteredSubcorpusAPI(APIView):
                 {
                     "created": False,
                     "matched_texts_count": 0,
-                    "error": "No texts found matching the provided filters"
+                    "error": "No texts found matching the provided filters",
+                    "message": "Помилка створення: жоден текст не підпадає під фільтр"
                 },
                 status=status.HTTP_404_NOT_FOUND
             )
@@ -462,7 +545,8 @@ class CreateFilteredSubcorpusAPI(APIView):
             subcorpus = FilteredSubcorpus.objects.create(
                 name=name,
                 corpus=corpus,
-                creator=request.user
+                creator=request.user,
+                filters=filters
             )
 
             subcorpus.texts.set(texts)
@@ -492,10 +576,14 @@ class CreateFilteredSubcorpusAPI(APIView):
 class FilteredSubcorpusAPI(APIView):
     permission_classes = [IsAuthenticated]
 
-    # Deletes a filtered subcorpus.
     def delete(self, request, pk):
         subcorpus = get_object_or_404(FilteredSubcorpus, id=pk)
-        if subcorpus.creator != request.user:
+
+        is_creator = subcorpus.creator == request.user
+        is_compiler = request.user.role == 'COMPILER'
+        is_admin = request.user.role in ('SUPER_ADMIN', 'ADMIN')
+
+        if not (is_creator or is_compiler or is_admin):
             return Response({"error": "You cannot delete this subcorpus"}, status=status.HTTP_403_FORBIDDEN)
         subcorpus.delete()
 
@@ -519,10 +607,13 @@ class CreateUserSubcorpusAPI(APIView):
 class UserSubcorpusAPI(APIView):
     permission_classes = [IsAuthenticated]
 
-    # Deletes a user subcorpus.
     def delete(self, request, pk):
         subcorpus = get_object_or_404(UserSubcorpus, id=pk)
-        if subcorpus.creator != request.user:
+
+        is_owner = subcorpus.creator == request.user
+        is_admin = request.user.role in ('SUPER_ADMIN', 'ADMIN')
+
+        if not (is_owner or is_admin):
             return Response({"error": "You cannot delete this subcorpus"}, status=status.HTTP_403_FORBIDDEN)
         subcorpus.delete()
 

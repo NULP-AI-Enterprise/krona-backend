@@ -1,6 +1,9 @@
+import uuid
+
 from django.db import models
 from django.conf import settings
 from django.contrib.postgres.fields import ArrayField
+from django.utils.crypto import get_random_string
 
 from smart_selects.db_fields import ChainedManyToManyField
 
@@ -48,14 +51,22 @@ class UserSubcorpus(models.Model):
     name = models.CharField(max_length=200)
     creator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=False, blank=False)
     corpus = models.ForeignKey(Corpus, on_delete=models.CASCADE)
-    
+    parent_subcorpus = models.ForeignKey(
+        'self',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='derived_subcorpora',
+    )
+
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=['creator', 'corpus'],
+                fields=['name', 'creator', 'corpus'],
                 name='unique_user_subcorpus_name'
             )
         ]
+
     def __str__(self): return f"{self.name} ({self.creator})"
 
 
@@ -87,6 +98,8 @@ class FilteredSubcorpus(models.Model):
     corpus = models.ForeignKey(Corpus, on_delete=models.CASCADE, null=False, blank=False)
     creator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=False, blank=False)
     creation_time = models.DateTimeField(auto_now_add=True)
+    update_time = models.DateTimeField(auto_now=True)
+    filters = models.JSONField(null=True, blank=True)
 
     class Meta:
         constraints = [
@@ -140,3 +153,157 @@ class TextMetadata(models.Model):
     text_origin = models.CharField(max_length=1, choices=TextOrigin.choices, null=True, blank=True)
 
     def __str__(self): return f"Metadata for {self.text.name}"
+
+
+class SubcorpusShare(models.Model):
+    class PermissionLevel(models.TextChoices):
+        VIEW = 'VIEW', 'Перегляд'
+        EDIT = 'EDIT', 'Редагування'
+
+    subcorpus = models.ForeignKey(
+        UserSubcorpus,
+        on_delete=models.CASCADE,
+        related_name='shares',
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='created_shares',
+    )
+    access_code = models.CharField(max_length=8, unique=True, editable=False)
+    link_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    permission_level = models.CharField(
+        max_length=4,
+        choices=PermissionLevel.choices,
+        default=PermissionLevel.VIEW,
+    )
+    is_active = models.BooleanField(default=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    max_uses = models.PositiveIntegerField(null=True, blank=True)
+    use_count = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def save(self, *args, **kwargs):
+        if not self.access_code:
+            self.access_code = self._generate_unique_code()
+        super().save(*args, **kwargs)
+
+    def _generate_unique_code(self):
+        charset = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+        while True:
+            code = get_random_string(8, allowed_chars=charset)
+            if not SubcorpusShare.objects.filter(access_code=code).exists() and \
+               not CorpusShare.objects.filter(access_code=code).exists():
+                return code
+
+    @property
+    def is_valid(self):
+        from django.utils import timezone
+        if not self.is_active:
+            return False
+        if self.expires_at and timezone.now() > self.expires_at:
+            return False
+        if self.max_uses and self.use_count >= self.max_uses:
+            return False
+        return True
+
+    def __str__(self):
+        return f"Share({self.access_code}) -> {self.subcorpus.name}"
+
+
+class SubcorpusAccessGrant(models.Model):
+    class PermissionLevel(models.TextChoices):
+        VIEW = 'VIEW', 'Перегляд'
+        EDIT = 'EDIT', 'Редагування'
+
+    share = models.ForeignKey(
+        SubcorpusShare,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='grants',
+    )
+    subcorpus = models.ForeignKey(
+        UserSubcorpus,
+        on_delete=models.CASCADE,
+        related_name='access_grants',
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='subcorpus_grants',
+    )
+    permission_level = models.CharField(
+        max_length=4,
+        choices=PermissionLevel.choices,
+        default=PermissionLevel.VIEW,
+    )
+    granted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('subcorpus', 'user')
+
+    def __str__(self):
+        return f"{self.user} -> {self.subcorpus.name} ({self.permission_level})"
+
+
+class CorpusShare(models.Model):
+    class PermissionLevel(models.TextChoices):
+        VIEW = 'VIEW', 'Перегляд'
+        EDIT = 'EDIT', 'Редагування'
+
+    corpus = models.ForeignKey(
+        Corpus,
+        on_delete=models.CASCADE,
+        related_name='shares',
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='created_corpus_shares',
+    )
+    access_code = models.CharField(max_length=8, unique=True, editable=False)
+    link_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    permission_level = models.CharField(
+        max_length=4,
+        choices=PermissionLevel.choices,
+        default=PermissionLevel.VIEW,
+    )
+    is_active = models.BooleanField(default=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    max_uses = models.PositiveIntegerField(null=True, blank=True)
+    use_count = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def save(self, *args, **kwargs):
+        if not self.access_code:
+            self.access_code = self._generate_unique_code()
+        super().save(*args, **kwargs)
+
+    def _generate_unique_code(self):
+        charset = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+        while True:
+            code = get_random_string(8, allowed_chars=charset)
+            if not CorpusShare.objects.filter(access_code=code).exists() and \
+               not SubcorpusShare.objects.filter(access_code=code).exists():
+                return code
+
+    @property
+    def is_valid(self):
+        from django.utils import timezone
+        if not self.is_active:
+            return False
+        if self.expires_at and timezone.now() > self.expires_at:
+            return False
+        if self.max_uses and self.use_count >= self.max_uses:
+            return False
+        return True
+
+    def __str__(self):
+        return f"CorpusShare({self.access_code}) -> {self.corpus.name}"

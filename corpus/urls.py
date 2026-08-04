@@ -22,4 +22,18 @@ urlpatterns = [
 
     path('user-subcorpus/', views.CreateUserSubcorpusAPI.as_view(), name='api_user_subcorpus_create'),
     path('user-subcorpus/<int:pk>/', views.UserSubcorpusAPI.as_view(), name='api_user_subcorpus_delete'),
+
+    # Sharing endpoints (subcorpus)
+    path('subcorpora/<int:subcorpus_id>/share/', views.CreateShareAPI.as_view(), name='api_create_share'),
+    path('subcorpora/<int:subcorpus_id>/shares/', views.ListSharesAPI.as_view(), name='api_list_shares'),
+    path('shares/<int:share_id>/', views.RevokeShareAPI.as_view(), name='api_revoke_share'),
+    path('shares/redeem/', views.RedeemShareAPI.as_view(), name='api_redeem_share'),
+    path('subcorpora/shared-with-me/', views.SharedWithMeAPI.as_view(), name='api_shared_with_me'),
+    path('subcorpora/<int:subcorpus_id>/derive/', views.DeriveSubcorpusAPI.as_view(), name='api_derive_subcorpus'),
+
+    # Sharing endpoints (corpus)
+    path('corpus/<int:corpus_id>/share/', views.CreateCorpusShareAPI.as_view(), name='api_create_corpus_share'),
+    path('corpus/<int:corpus_id>/shares/', views.ListCorpusSharesAPI.as_view(), name='api_list_corpus_shares'),
+    path('corpus-shares/<int:share_id>/', views.RevokeCorpusShareAPI.as_view(), name='api_revoke_corpus_share'),
+    path('corpus/shared-with-me/', views.SharedCorporaWithMeAPI.as_view(), name='api_shared_corpora_with_me'),
 ]

@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
 WORKDIR /code
 
@@ -13,11 +13,23 @@ RUN apt-get update && apt-get install -y \
 RUN pip install --no-cache-dir --upgrade pip
 
 COPY requirements.txt /code/
-
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install --no-cache-dir click
+
+ARG SPACY_MODEL=uk_core_news_lg
 RUN CURL_CA_BUNDLE="" REQUESTS_CA_BUNDLE="" SSL_CERT_FILE="" PIP_TRUSTED_HOST="pypi.org files.pythonhosted.org github.com objects.githubusercontent.com raw.githubusercontent.com release-assets.githubusercontent.com" \
     pip install --no-cache-dir --trusted-host github.com --trusted-host release-assets.githubusercontent.com \
-    uk_core_news_lg@https://github.com/explosion/spacy-models/releases/download/uk_core_news_lg-3.7.0/uk_core_news_lg-3.7.0-py3-none-any.whl
+    "uk_core_news_lg@https://github.com/explosion/spacy-models/releases/download/uk_core_news_lg-3.7.0/uk_core_news_lg-3.7.0-py3-none-any.whl"
 
 COPY . /code/
+
+RUN python manage.py collectstatic --noinput 2>/dev/null || true
+
+RUN addgroup --system --gid 1001 django && \
+    adduser --system --uid 1001 --gid 1001 django
+RUN chown -R django:django /code
+USER django
+
+EXPOSE 8000
+
+CMD ["gunicorn", "Text_Analysis.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "120"]

@@ -36,8 +36,12 @@ class TextProcessor:
             rule = {}
 
             if part.startswith('['):
-                val = part.strip('[]').lower()
-                rule['pos'] = self.pos_mapping.get(val, val.upper())
+                inner = part.strip('[]').strip()
+                if '=' in inner:
+                    rule = self._parse_attribute_value(inner)
+                else:
+                    val = inner.lower()
+                    rule['pos'] = self.pos_mapping.get(val, val.upper())
             elif part.startswith('{'):
                 rule['lemma'] = part.strip('{}').lower()
             elif part.startswith('"'):
@@ -50,6 +54,39 @@ class TextProcessor:
 
         return tokens
 
+    def _parse_attribute_value(self, inner: str) -> Dict:
+        rule = {}
+        pairs = [p.strip() for p in inner.split('&')]
+        for pair in pairs:
+            match = re.match(r'(\w+)\s*=\s*"([^"]*)"', pair)
+            if not match:
+                continue
+            key = match.group(1).lower()
+            value = match.group(2).lower()
+            values = [v.strip() for v in value.split('|') if v.strip()]
+            if key == 'pos':
+                mapped = [self.pos_mapping.get(v, v.upper()) for v in values]
+                rule['pos'] = mapped if len(mapped) > 1 else mapped[0]
+            else:
+                rule[f'morph.{key}'] = values if len(values) > 1 else values[0]
+        return rule
+
+
+    def _get_nested_value(self, data, key):
+        parts = key.split('.')
+        val = data
+        for p in parts:
+            if isinstance(val, dict):
+                val = val.get(p, '')
+            else:
+                return ''
+        return val
+
+    def _match_rule_value(self, actual, expected):
+        actual_str = str(actual).lower()
+        if isinstance(expected, list):
+            return actual_str in [str(v).lower() for v in expected]
+        return actual_str == str(expected).lower()
 
     def build_kwic(self, original_sentence_text, left_context_size, right_context_size, query_rules, es_tokens):
         es_tokens = [t.to_dict() if hasattr(t, 'to_dict') else dict(t) for t in es_tokens]
@@ -57,7 +94,7 @@ class TextProcessor:
         coords = []
         current_idx = 0
 
-        safe_text = original_sentence_text.lower().replace("'", "ʼ").replace("’", "ʼ")
+        safe_text = original_sentence_text.lower().replace("\u2019", "ʼ").replace("\u2018", "ʼ")
 
         for token_dict in es_tokens:
             form = str(token_dict.get('form', ''))
@@ -65,7 +102,7 @@ class TextProcessor:
                 coords.append((current_idx, current_idx))
                 continue
 
-            safe_form = form.lower().replace("'", "ʼ").replace("’", "ʼ")
+            safe_form = form.lower().replace("\u2019", "ʼ").replace("\u2018", "ʼ")
             start_char = safe_text.find(safe_form, current_idx)
 
             if start_char == -1:
@@ -93,14 +130,14 @@ class TextProcessor:
                     target_t = t_idx + skip
                     if target_t < len(es_tokens):
                         word_data = es_tokens[target_t]
-                        if all(str(word_data.get(k, '')).lower() == str(v).lower() for k, v in next_rule.items()):
+                        if all(self._match_rule_value(self._get_nested_value(word_data, k), v) for k, v in next_rule.items()):
                             res = match_at(target_t + 1, r_idx + 2)
                             if res is not None:
                                 return res
                 return None
             else:
                 word_data = es_tokens[t_idx]
-                if all(str(word_data.get(k, '')).lower() == str(v).lower() for k, v in rule.items()):
+                if all(self._match_rule_value(self._get_nested_value(word_data, k), v) for k, v in rule.items()):
                     return match_at(t_idx + 1, r_idx + 1)
                 return None
 
