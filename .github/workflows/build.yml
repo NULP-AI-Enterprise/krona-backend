@@ -5,12 +5,12 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "backend/**"
+      - "**"
   push:
     branches: [main]
     tags: ["v*"]
     paths:
-      - "backend/**"
+      - "**"
 
 env:
   REGISTRY: ghcr.io
@@ -76,7 +76,7 @@ jobs:
       - name: Build & push
         uses: docker/build-push-action@v6
         with:
-          context: ./backend
+          context: .
           push: true
           tags: |
             ${{ env.IMAGE }}:${{ steps.meta.outputs.sha_tag }}
@@ -87,10 +87,10 @@ jobs:
       - name: Pin image SHA in deployment.yaml
         run: |
           TAG="${{ steps.meta.outputs.sha_tag }}"
-          sed -i "s|image: ${{ env.IMAGE }}:.*|image: ${{ env.IMAGE }}:${TAG}|g" backend/k8s/deployment.yaml
+          sed -i "s|image: ${{ env.IMAGE }}:.*|image: ${{ env.IMAGE }}:${TAG}|g" k8s/deployment.yaml
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add backend/k8s/deployment.yaml
+          git add k8s/deployment.yaml
           git diff --staged --quiet || git commit -m "ci: pin backend image to ${TAG} [skip ci]"
           git push
 
