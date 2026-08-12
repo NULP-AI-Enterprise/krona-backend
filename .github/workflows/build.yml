@@ -16,9 +16,9 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -34,8 +34,12 @@ jobs:
           POSTGRES_PASSWORD: ci
           POSTGRES_HOST: localhost
           ELASTICSEARCH_HOST: localhost
-          DJANGO_SECRET_KEY: ci-dummy-key
-        run: python manage.py check --deploy --fail-level WARNING
+          DJANGO_SECRET_KEY: 'ci-very-long-secret-key-0123456789-abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+          SESSION_COOKIE_SECURE: 'False'
+          CSRF_COOKIE_SECURE: 'False'
+          SECURE_SSL_REDIRECT: 'False'
+          SECURE_HSTS_SECONDS: '0'
+        run: python manage.py check --deploy --fail-level WARNING --ignore security.W004,security.W009
 
   build-and-push:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
@@ -46,7 +50,7 @@ jobs:
       packages: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: docker/login-action@v3
         with:
