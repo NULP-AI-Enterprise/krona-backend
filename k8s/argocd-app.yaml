@@ -6,7 +6,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/NULP-AI-Enterprise/Krona.git
+    repoURL: https://github.com/NULP-AI-Enterprise/krona-backend
     targetRevision: main
     path: backend/k8s/
   destination:
