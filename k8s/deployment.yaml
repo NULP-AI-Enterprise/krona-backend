@@ -19,7 +19,7 @@ spec:
     spec:
       initContainers:
         - name: migrate
-          image: ghcr.io/nulp-ai-enterprise/krona-backend:sha-2da2993
+          image: ghcr.io/nulp-ai-enterprise/krona-backend:sha-9588f57
           command: ["python", "manage.py", "migrate", "--noinput"]
           env:
             - name: POSTGRES_DB
@@ -61,7 +61,7 @@ spec:
               memory: 256Mi
       containers:
         - name: krona-backend
-          image: ghcr.io/nulp-ai-enterprise/krona-backend:sha-2da2993
+          image: ghcr.io/nulp-ai-enterprise/krona-backend:sha-9588f57
           imagePullPolicy: Always
           ports:
             - name: http
