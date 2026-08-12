@@ -8,7 +8,7 @@ spec:
   source:
     repoURL: https://github.com/NULP-AI-Enterprise/krona-backend
     targetRevision: main
-    path: backend/k8s/
+    path: k8s
   destination:
     server: https://kubernetes.default.svc
     namespace: krona
