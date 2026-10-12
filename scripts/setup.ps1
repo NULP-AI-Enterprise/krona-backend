@@ -22,8 +22,9 @@ docker-compose exec backend python manage.py makemigrations users
 docker-compose exec backend python manage.py migrate
 
 Write-Host ""
-Write-Host "[4/5] Rebuilding Elasticsearch indexes..." -ForegroundColor Yellow
-docker-compose exec backend python manage.py search_index --rebuild -f
+Write-Host "[4/5] Initializing Elasticsearch mapping without deleting sentences..." -ForegroundColor Yellow
+docker-compose exec backend python manage.py ensure_search_index
+if ($LASTEXITCODE -ne 0) { exit 1 }
 
 Write-Host ""
 Write-Host "[5/5] Seeding default data (styles & genres)..." -ForegroundColor Yellow

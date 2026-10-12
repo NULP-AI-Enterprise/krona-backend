@@ -24,8 +24,8 @@ docker-compose exec backend python manage.py makemigrations users
 docker-compose exec backend python manage.py migrate
 
 echo ""
-echo "[4/5] Rebuilding Elasticsearch indexes..."
-docker-compose exec backend python manage.py search_index --rebuild -f
+echo "[4/5] Initializing Elasticsearch mapping without deleting sentences..."
+docker-compose exec backend python manage.py ensure_search_index || exit 1
 
 echo ""
 echo "[5/5] Seeding default data (styles & genres)..."
